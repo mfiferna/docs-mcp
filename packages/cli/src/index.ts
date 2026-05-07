@@ -801,11 +801,13 @@ function parseIntOption(value: string): number {
 
 function normalizeProvider(value: string): "none" | "hash" | "openai" | "external" {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "none" || normalized === "hash" || normalized === "openai") {
+  if (
+    normalized === "none" ||
+    normalized === "hash" ||
+    normalized === "openai" ||
+    normalized === "external"
+  ) {
     return normalized;
-  }
-  if (normalized === "external" || normalized === "local" || normalized === "openai-compatible") {
-    return "external";
   }
 
   throw new Error(

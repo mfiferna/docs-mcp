@@ -109,6 +109,11 @@ export class HashEmbeddingProvider implements EmbeddingProvider {
  * safety margin so 8000 * 3 = 24 000 characters.
  */
 const DEFAULT_MAX_INPUT_CHARS = 24_000;
+/**
+ * Default higher limit for non-OpenAI providers that commonly expose larger
+ * embedding contexts (for example 32k-token local models). We still keep a
+ * conservative ~3 chars/token safety margin, so 32_000 * 3 ≈ 96_000 chars.
+ */
 const DEFAULT_EXTERNAL_MAX_INPUT_CHARS = 96_000;
 
 /** Known pricing in USD per 1M input tokens for OpenAI embedding models. */
