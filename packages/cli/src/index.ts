@@ -232,10 +232,17 @@ program
   .requiredOption("--docs-dir <path>", "Path to markdown corpus")
   .requiredOption("--out <path>", "Output directory")
   .option("--description <value>", "Corpus description", "Documentation corpus")
-  .option("--embedding-provider <provider>", "Embedding provider: none | hash | openai", "none")
+  .option(
+    "--embedding-provider <provider>",
+    "Embedding provider: none | hash | openai | external",
+    "none",
+  )
   .option("--embedding-model <value>", "Embedding model override")
   .option("--embedding-dimensions <number>", "Embedding dimensions", parseIntOption)
-  .option("--embedding-api-key <value>", "Embedding API key (or set OPENAI_API_KEY)")
+  .option(
+    "--embedding-api-key <value>",
+    "Embedding API key (or set DOCS_MCP_EMBEDDING_API_KEY or OPENAI_API_KEY)",
+  )
   .option("--embedding-base-url <value>", "Embedding API base URL")
   .option("--embedding-batch-size <number>", "Embedding batch size", parseIntOption)
   .option("--embedding-concurrency <number>", "Embedding request concurrency", parseIntOption)
@@ -406,7 +413,7 @@ program
         writeBatchProgress(event);
       };
       const providerInput: {
-        provider: "none" | "hash" | "openai";
+        provider: "none" | "hash" | "openai" | "external";
         model?: string;
         dimensions?: number;
         apiKey?: string;
@@ -419,10 +426,13 @@ program
         onBatchProgress?: (event: BatchProgressEvent) => void;
       } = {
         provider: normalizeProvider(options.embeddingProvider),
-        batchApiThreshold: 2500,
-        batchName: `docs-mcp:${await resolveCorpusLabel(docsDir)}`,
         onBatchProgress,
       };
+      if (providerInput.provider === "openai") {
+        // Only the OpenAI provider uses batch metadata for resumable batch jobs.
+        providerInput.batchApiThreshold = 2500;
+        providerInput.batchName = `docs-mcp:${await resolveCorpusLabel(docsDir)}`;
+      }
       if (options.embeddingModel !== undefined) {
         providerInput.model = options.embeddingModel;
       }
@@ -441,7 +451,10 @@ program
       if (options.embeddingMaxRetries !== undefined) {
         providerInput.maxRetries = options.embeddingMaxRetries;
       }
-      const apiKey = options.embeddingApiKey ?? process.env.OPENAI_API_KEY;
+      const apiKey =
+        options.embeddingApiKey ??
+        process.env.DOCS_MCP_EMBEDDING_API_KEY ??
+        process.env.OPENAI_API_KEY;
       if (apiKey !== undefined) {
         providerInput.apiKey = apiKey;
       }
@@ -787,13 +800,20 @@ function parseIntOption(value: string): number {
   return parsed;
 }
 
-function normalizeProvider(value: string): "none" | "hash" | "openai" {
+function normalizeProvider(value: string): "none" | "hash" | "openai" | "external" {
   const normalized = value.trim().toLowerCase();
-  if (normalized === "none" || normalized === "hash" || normalized === "openai") {
+  if (
+    normalized === "none" ||
+    normalized === "hash" ||
+    normalized === "openai" ||
+    normalized === "external"
+  ) {
     return normalized;
   }
 
-  throw new Error(`unsupported embedding provider '${value}'. Expected one of: none, hash, openai`);
+  throw new Error(
+    `unsupported embedding provider '${value}'. Expected one of: none, hash, openai, external`,
+  );
 }
 
 async function exists(targetPath: string): Promise<boolean> {
