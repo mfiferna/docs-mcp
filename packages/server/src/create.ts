@@ -135,7 +135,10 @@ export const CreateDocsServerOptionsSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, "toolPrefix must be alphanumeric, dash, or underscore")
     .optional(),
 
-  /** API key for query-time embeddings. Falls back to `OPENAI_API_KEY` env var. */
+  /**
+   * API key for query-time embeddings. Falls back to `DOCS_MCP_QUERY_EMBEDDING_API_KEY`,
+   * then `DOCS_MCP_EMBEDDING_API_KEY`, then `OPENAI_API_KEY`.
+   */
   queryEmbeddingApiKey: z.string().optional(),
 
   /**
@@ -358,7 +361,7 @@ function resolveQueryEmbeddingProvider(
     return undefined;
   }
 
-  if (provider !== "hash" && provider !== "openai") {
+  if (provider !== "hash" && provider !== "openai" && provider !== "external") {
     logger.warn("embedding provider is not supported at runtime; falling back to FTS-only search", {
       provider: metadataEmbedding?.provider,
     });
@@ -366,7 +369,7 @@ function resolveQueryEmbeddingProvider(
   }
 
   const input: {
-    provider: "hash" | "openai";
+    provider: "hash" | "openai" | "external";
     model?: string;
     dimensions?: number;
     apiKey?: string;
@@ -384,7 +387,11 @@ function resolveQueryEmbeddingProvider(
     input.dimensions = metadataEmbedding.dimensions;
   }
 
-  const apiKey = options.queryEmbeddingApiKey ?? process.env.OPENAI_API_KEY;
+  const apiKey =
+    options.queryEmbeddingApiKey ??
+    process.env.DOCS_MCP_QUERY_EMBEDDING_API_KEY ??
+    process.env.DOCS_MCP_EMBEDDING_API_KEY ??
+    process.env.OPENAI_API_KEY;
   if (apiKey !== undefined) {
     input.apiKey = apiKey;
   }

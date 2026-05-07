@@ -53,11 +53,12 @@ The embedding model is fully configurable via a provider interface. The `docs-mc
 
 **Supported backends:**
 
-| Backend  | Use Case                                                           | Parallelism Strategy                             |
-| -------- | ------------------------------------------------------------------ | ------------------------------------------------ |
-| `none`   | FTS-only index, no embedding API calls                             | N/A                                              |
-| `hash`   | Deterministic hash-based vectors for testing                       | N/A                                              |
-| `openai` | Higher quality embeddings via `text-embedding-3-large` (3072-dim). | Concurrent HTTP batches with rate-limit backoff. |
+| Backend    | Use Case                                                                                   | Parallelism Strategy                             |
+| ---------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `none`     | FTS-only index, no embedding API calls                                                     | N/A                                              |
+| `hash`     | Deterministic hash-based vectors for testing                                               | N/A                                              |
+| `openai`   | Higher quality embeddings via `text-embedding-3-large` (3072-dim) plus OpenAI batch APIs. | Concurrent HTTP batches with rate-limit backoff. |
+| `external` | Local or third-party OpenAI-compatible `/embeddings` endpoints with bearer-token auth.     | Concurrent HTTP batches against `/embeddings`.   |
 
 **Implementation note:** The `EmbeddingProvider` interface is defined in `@speakeasy-api/docs-mcp-core`. The CLI passes the configured provider into the build pipeline to generate embeddings for the corpus. At runtime, the server uses the provider to embed search queries for vector search. If vector search is disabled or the index was built with `--embedding-provider none`, the server falls back to pure FTS and bypasses the embedding API.
 

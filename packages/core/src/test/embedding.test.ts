@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ExternalEmbeddingProvider,
   HashEmbeddingProvider,
   NoopEmbeddingProvider,
   OpenAIEmbeddingProvider,
@@ -210,6 +211,77 @@ describe("embedding providers", () => {
     // Should use the sync /embeddings endpoint, not /files
     expect(fetchMock.mock.calls[0]![0]).toContain("/embeddings");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("external provider uses the synchronous embeddings endpoint without dimensions in the request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [{ index: 0, embedding: [1, 0, 0] }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const provider = new ExternalEmbeddingProvider({
+      apiKey: "test-key",
+      baseUrl: "https://embeddings.example.com/v1",
+      model: "qwen3-embedding-8b",
+      dimensions: 3,
+      batchSize: 1,
+    });
+
+    const vectors = await provider.embed(["text-a"]);
+    expect(vectors).toEqual([[1, 0, 0]]);
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://embeddings.example.com/v1/embeddings");
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-key",
+      },
+    });
+
+    const requestBody = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as globalThis.RequestInit).body as string,
+    ) as {
+      model: string;
+      input: string[];
+      dimensions?: number;
+    };
+    expect(requestBody).toEqual({
+      model: "qwen3-embedding-8b",
+      input: ["text-a"],
+    });
+  });
+
+  it("factory creates an external provider and validates required config", () => {
+    const provider = createEmbeddingProvider({
+      provider: "external",
+      apiKey: "test-key",
+      baseUrl: "https://embeddings.example.com/v1",
+      dimensions: 4096,
+      model: "qwen3-embedding-8b",
+    });
+    expect(provider.name).toBe("external");
+    expect(provider.dimensions).toBe(4096);
+
+    expect(() =>
+      createEmbeddingProvider({
+        provider: "external",
+        apiKey: "test-key",
+        dimensions: 4096,
+      }),
+    ).toThrow(/baseUrl/);
+
+    expect(() =>
+      createEmbeddingProvider({
+        provider: "external",
+        apiKey: "test-key",
+        baseUrl: "https://embeddings.example.com/v1",
+      }),
+    ).toThrow(/dimensions/);
   });
 
   it("batch API throws on failed batch status", async () => {

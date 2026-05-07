@@ -39,7 +39,10 @@ program
     "MCP server version (env: SERVER_VERSION)",
     process.env["SERVER_VERSION"],
   )
-  .option("--query-embedding-api-key <value>", "Query embedding API key (or set OPENAI_API_KEY)")
+  .option(
+    "--query-embedding-api-key <value>",
+    "Query embedding API key (or set DOCS_MCP_QUERY_EMBEDDING_API_KEY, DOCS_MCP_EMBEDDING_API_KEY, or OPENAI_API_KEY)",
+  )
   .option("--query-embedding-base-url <value>", "Query embedding API base URL")
   .option("--query-embedding-batch-size <number>", "Query embedding batch size", parseIntOption)
   .option("--proximity-weight <number>", "Lexical phrase blend weight", parseNumberOption)

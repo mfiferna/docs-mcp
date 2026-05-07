@@ -48,6 +48,19 @@ export interface OpenAIEmbeddingProviderOptions {
   onBatchProgress?: (event: BatchProgressEvent) => void;
 }
 
+export interface ExternalEmbeddingProviderOptions {
+  apiKey: string;
+  baseUrl: string;
+  model?: string;
+  dimensions: number;
+  batchSize?: number;
+  concurrency?: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs?: number;
+  maxInputChars?: number;
+}
+
 export class NoopEmbeddingProvider implements EmbeddingProvider {
   readonly name = "none";
   readonly model = "none";
@@ -96,6 +109,7 @@ export class HashEmbeddingProvider implements EmbeddingProvider {
  * safety margin so 8000 * 3 = 24 000 characters.
  */
 const DEFAULT_MAX_INPUT_CHARS = 24_000;
+const DEFAULT_EXTERNAL_MAX_INPUT_CHARS = 96_000;
 
 /** Known pricing in USD per 1M input tokens for OpenAI embedding models. */
 const OPENAI_COST_PER_M_TOKENS: Record<string, number> = {
@@ -181,71 +195,18 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   private async embedBatchWithRetry(batch: string[]): Promise<number[][]> {
-    let attempt = 0;
-    const truncated = batch.map((text) => {
-      if (text.length > DEFAULT_MAX_INPUT_CHARS) {
-        const source = text.match(/^Context: (.+)\n/)?.[1] ?? "unknown";
-        console.warn(
-          `[docs-mcp] Embedding input truncated from ${text.length} to ${DEFAULT_MAX_INPUT_CHARS} characters (source: ${source}). ` +
-            `Consider lowering max_chunk_size in your chunking strategy to avoid content loss.`,
-        );
-        return text.slice(0, DEFAULT_MAX_INPUT_CHARS);
-      }
-      return text;
+    return fetchEmbeddingsWithRetry({
+      apiKey: this.apiKey,
+      baseUrl: this.baseUrl,
+      model: this.model,
+      texts: batch,
+      dimensions: this.dimensions,
+      maxInputChars: DEFAULT_MAX_INPUT_CHARS,
+      maxRetries: this.maxRetries,
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      retryMaxDelayMs: this.retryMaxDelayMs,
+      errorLabel: "OpenAI",
     });
-
-    while (true) {
-      const response = await fetch(`${this.baseUrl}/embeddings`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          input: truncated,
-          dimensions: this.dimensions,
-        }),
-      });
-
-      if (response.ok) {
-        const payload = (await response.json()) as {
-          data?: Array<{ index: number; embedding: number[] }>;
-        };
-
-        if (!Array.isArray(payload.data)) {
-          throw new Error("OpenAI embeddings response missing data array");
-        }
-
-        const ordered = [...payload.data].sort((a, b) => a.index - b.index);
-        if (ordered.length !== batch.length) {
-          throw new Error(
-            `OpenAI embeddings response size mismatch: expected ${batch.length}, got ${ordered.length}`,
-          );
-        }
-
-        return ordered.map((item) => item.embedding);
-      }
-
-      const body = await response.text();
-      if (!isRetryableStatus(response.status) || attempt >= this.maxRetries) {
-        throw new Error(
-          `OpenAI embeddings request failed (${response.status}): ${body.slice(0, 500)}`,
-        );
-      }
-
-      const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-      const backoffMs = Math.min(
-        this.retryMaxDelayMs,
-        Math.max(
-          retryAfterMs,
-          this.retryBaseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 250),
-        ),
-      );
-
-      await sleep(backoffMs);
-      attempt += 1;
-    }
   }
 
   private buildBatchJsonl(texts: string[]): string {
@@ -546,8 +507,97 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+export class ExternalEmbeddingProvider implements EmbeddingProvider {
+  readonly name = "external";
+  readonly model: string;
+  readonly dimensions: number;
+  readonly costPerMillionTokens = 0;
+  readonly configFingerprint: string;
+
+  private readonly apiKey: string;
+  readonly batchSize: number;
+  private readonly baseUrl: string;
+  private readonly concurrency: number;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
+  private readonly maxInputChars: number;
+
+  constructor(options: ExternalEmbeddingProviderOptions) {
+    if (!options.apiKey.trim()) {
+      throw new Error("ExternalEmbeddingProvider requires a non-empty apiKey");
+    }
+    if (!options.baseUrl.trim()) {
+      throw new Error("ExternalEmbeddingProvider requires a non-empty baseUrl");
+    }
+    if (!Number.isFinite(options.dimensions) || options.dimensions <= 0) {
+      throw new Error("ExternalEmbeddingProvider requires a positive dimensions value");
+    }
+
+    this.apiKey = options.apiKey;
+    this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.model = options.model ?? "external";
+    this.dimensions = Math.floor(options.dimensions);
+    this.batchSize = options.batchSize ?? 128;
+    this.concurrency = normalizeInt(options.concurrency, 4, 1, 32);
+    this.maxRetries = normalizeInt(options.maxRetries, 3, 0, 10);
+    this.retryBaseDelayMs = normalizeInt(options.retryBaseDelayMs, 500, 50, 60_000);
+    this.retryMaxDelayMs = normalizeInt(options.retryMaxDelayMs, 10_000, 100, 120_000);
+    this.maxInputChars = normalizeInt(
+      options.maxInputChars,
+      DEFAULT_EXTERNAL_MAX_INPUT_CHARS,
+      1,
+      500_000,
+    );
+    this.configFingerprint = computeConfigFingerprint({
+      provider: "external",
+      model: this.model,
+      dimensions: this.dimensions,
+      baseUrl: this.baseUrl,
+    });
+  }
+
+  async embed(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) {
+      return [];
+    }
+
+    const vectors: Array<number[] | undefined> = new Array<number[] | undefined>(texts.length);
+    const batches: Array<{ offset: number; values: string[] }> = [];
+    for (let i = 0; i < texts.length; i += this.batchSize) {
+      batches.push({
+        offset: i,
+        values: texts.slice(i, i + this.batchSize),
+      });
+    }
+
+    await runWithConcurrency(batches, this.concurrency, async (batch) => {
+      const batchVectors = await fetchEmbeddingsWithRetry({
+        apiKey: this.apiKey,
+        baseUrl: this.baseUrl,
+        model: this.model,
+        texts: batch.values,
+        maxInputChars: this.maxInputChars,
+        maxRetries: this.maxRetries,
+        retryBaseDelayMs: this.retryBaseDelayMs,
+        retryMaxDelayMs: this.retryMaxDelayMs,
+        errorLabel: "External",
+      });
+      for (let i = 0; i < batchVectors.length; i += 1) {
+        vectors[batch.offset + i] = batchVectors[i];
+      }
+    });
+
+    if (vectors.some((vector) => vector === undefined)) {
+      throw new Error("External embeddings response was missing one or more vectors");
+    }
+
+    return vectors as number[][];
+  }
+}
+
 export function createEmbeddingProvider(input: {
-  provider: "none" | "hash" | "openai";
+  provider: "none" | "hash" | "openai" | "external";
   dimensions?: number;
   apiKey?: string;
   model?: string;
@@ -561,9 +611,14 @@ export function createEmbeddingProvider(input: {
   retryMaxDelayMs?: number;
   onBatchProgress?: (event: BatchProgressEvent) => void;
 }): EmbeddingProvider {
-  if (input.provider !== "none" && input.provider !== "hash" && input.provider !== "openai") {
+  if (
+    input.provider !== "none" &&
+    input.provider !== "hash" &&
+    input.provider !== "openai" &&
+    input.provider !== "external"
+  ) {
     throw new Error(
-      `unsupported embedding provider '${String(input.provider)}'. Expected one of: none, hash, openai`,
+      `unsupported embedding provider '${String(input.provider)}'. Expected one of: none, hash, openai, external`,
     );
   }
 
@@ -584,9 +639,43 @@ export function createEmbeddingProvider(input: {
 
   const apiKey = input.apiKey?.trim();
   if (!apiKey) {
-    throw new Error(
-      `${input.provider} embedding provider requires --embedding-api-key or OPENAI_API_KEY`,
-    );
+    throw new Error(`${input.provider} embedding provider requires an apiKey`);
+  }
+
+  if (input.provider === "external") {
+    const baseUrl = input.baseUrl?.trim();
+    if (!baseUrl) {
+      throw new Error("external embedding provider requires a baseUrl");
+    }
+    if (input.dimensions === undefined) {
+      throw new Error("external embedding provider requires dimensions");
+    }
+
+    const options: ExternalEmbeddingProviderOptions = {
+      apiKey,
+      baseUrl,
+      dimensions: input.dimensions,
+    };
+    if (input.model !== undefined) {
+      options.model = input.model;
+    }
+    if (input.batchSize !== undefined) {
+      options.batchSize = input.batchSize;
+    }
+    if (input.concurrency !== undefined) {
+      options.concurrency = input.concurrency;
+    }
+    if (input.maxRetries !== undefined) {
+      options.maxRetries = input.maxRetries;
+    }
+    if (input.retryBaseDelayMs !== undefined) {
+      options.retryBaseDelayMs = input.retryBaseDelayMs;
+    }
+    if (input.retryMaxDelayMs !== undefined) {
+      options.retryMaxDelayMs = input.retryMaxDelayMs;
+    }
+
+    return new ExternalEmbeddingProvider(options);
   }
 
   const options: OpenAIEmbeddingProviderOptions = { apiKey };
@@ -625,6 +714,88 @@ export function createEmbeddingProvider(input: {
   }
 
   return new OpenAIEmbeddingProvider(options);
+}
+
+async function fetchEmbeddingsWithRetry(options: {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  texts: string[];
+  dimensions?: number;
+  maxInputChars: number;
+  maxRetries: number;
+  retryBaseDelayMs: number;
+  retryMaxDelayMs: number;
+  errorLabel: string;
+}): Promise<number[][]> {
+  let attempt = 0;
+  const truncated = options.texts.map((text) => truncateEmbeddingInput(text, options.maxInputChars));
+
+  while (true) {
+    const response = await fetch(`${options.baseUrl}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${options.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: options.model,
+        input: truncated,
+        ...(options.dimensions !== undefined ? { dimensions: options.dimensions } : {}),
+      }),
+    });
+
+    if (response.ok) {
+      const payload = (await response.json()) as {
+        data?: Array<{ index: number; embedding: number[] }>;
+      };
+
+      if (!Array.isArray(payload.data)) {
+        throw new Error(`${options.errorLabel} embeddings response missing data array`);
+      }
+
+      const ordered = [...payload.data].sort((a, b) => a.index - b.index);
+      if (ordered.length !== options.texts.length) {
+        throw new Error(
+          `${options.errorLabel} embeddings response size mismatch: expected ${options.texts.length}, got ${ordered.length}`,
+        );
+      }
+
+      return ordered.map((item) => item.embedding);
+    }
+
+    const body = await response.text();
+    if (!isRetryableStatus(response.status) || attempt >= options.maxRetries) {
+      throw new Error(
+        `${options.errorLabel} embeddings request failed (${response.status}): ${body.slice(0, 500)}`,
+      );
+    }
+
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    const backoffMs = Math.min(
+      options.retryMaxDelayMs,
+      Math.max(
+        retryAfterMs,
+        options.retryBaseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 250),
+      ),
+    );
+
+    await sleep(backoffMs);
+    attempt += 1;
+  }
+}
+
+function truncateEmbeddingInput(text: string, maxInputChars: number): string {
+  if (text.length <= maxInputChars) {
+    return text;
+  }
+
+  const source = text.match(/^Context: (.+)\n/)?.[1] ?? "unknown";
+  console.warn(
+    `[docs-mcp] Embedding input truncated from ${text.length} to ${maxInputChars} characters (source: ${source}). ` +
+      `Consider lowering max_chunk_size in your chunking strategy to avoid content loss.`,
+  );
+  return text.slice(0, maxInputChars);
 }
 
 function hashToUnitVector(text: string, dimensions: number): number[] {

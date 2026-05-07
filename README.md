@@ -95,8 +95,9 @@ We recommend starting with FTS-only search. While embeddings improve relevance f
 ## Graceful Fallback
 
 1. **No embeddings** (`--embedding-provider none`): FTS-only search, zero cost, zero API keys. Already effective for exact-match and lexical queries.
-2. **With embeddings** (`--embedding-provider openai`): Hybrid search with better recall on conceptual and paraphrased queries. ~$1 one-time embedding cost per 28.8MB corpus.
-3. **Runtime degradation**: If the embedding API is unavailable at query time, the server automatically falls back to FTS-only with a one-time warning.
+2. **With OpenAI embeddings** (`--embedding-provider openai`): Hybrid search with better recall on conceptual and paraphrased queries. ~$1 one-time embedding cost per 28.8MB corpus.
+3. **With local/external embeddings** (`--embedding-provider external`): Hybrid search against an OpenAI-compatible `/embeddings` endpoint using bearer-token auth, without requiring OpenAI batch/file APIs.
+4. **Runtime degradation**: If the embedding API is unavailable at query time, the server automatically falls back to FTS-only with a one-time warning.
 
 ## Supported File Types
 
@@ -259,7 +260,7 @@ docker run -p 20310:20310 docs-mcp
 
 ### With Embeddings (Optional)
 
-For hybrid FTS + semantic search, add an OpenAI embedding provider. This improves recall on conceptual and paraphrased queries at the cost of higher latency and ~$1 one-time embedding cost per 28.8MB corpus.
+For hybrid FTS + semantic search, add an embedding provider. OpenAI is built in for hosted usage; `external` is intended for local or third-party OpenAI-compatible `/embeddings` endpoints that only need bearer-token auth.
 
 ```dockerfile
 # --- build stage ---
@@ -286,6 +287,24 @@ docker run -p 20310:20310 -e OPENAI_API_KEY docs-mcp
 ```
 
 The build secret embeds the corpus; the runtime `-e OPENAI_API_KEY` lets the server embed search queries.
+
+For a local or external OpenAI-compatible embedding service, use `external` plus an explicit base URL and dimensions:
+
+```bash
+DOCS_MCP_EMBEDDING_API_KEY=your-bearer-token \
+docs-mcp build \
+  --docs-dir ./docs \
+  --out ./index \
+  --embedding-provider external \
+  --embedding-base-url http://localhost:8000/v1 \
+  --embedding-model qwen3-embedding-8b \
+  --embedding-dimensions 4096
+
+DOCS_MCP_QUERY_EMBEDDING_API_KEY=your-bearer-token \
+docs-mcp-server \
+  --index-dir ./index \
+  --query-embedding-base-url http://localhost:8000/v1
+```
 
 ### Docker Compose (Server + Playground)
 
