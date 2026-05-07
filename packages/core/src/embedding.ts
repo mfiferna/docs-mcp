@@ -582,6 +582,9 @@ export class ExternalEmbeddingProvider implements EmbeddingProvider {
         baseUrl: this.baseUrl,
         model: this.model,
         texts: batch.values,
+        // External providers may expose OpenAI-compatible `/embeddings` without
+        // supporting the optional `dimensions` request field, so docs-mcp keeps
+        // dimensions in metadata/cache config but omits it from HTTP requests.
         maxInputChars: this.maxInputChars,
         maxRetries: this.maxRetries,
         retryBaseDelayMs: this.retryBaseDelayMs,

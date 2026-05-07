@@ -234,8 +234,9 @@ describe("embedding providers", () => {
 
     const vectors = await provider.embed(["text-a"]);
     expect(vectors).toEqual([[1, 0, 0]]);
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://embeddings.example.com/v1/embeddings");
-    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
+    const firstCall = fetchMock.mock.calls[0];
+    expect(firstCall?.[0]).toBe("https://embeddings.example.com/v1/embeddings");
+    expect(firstCall?.[1]).toMatchObject({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -243,9 +244,7 @@ describe("embedding providers", () => {
       },
     });
 
-    const requestBody = JSON.parse(
-      (fetchMock.mock.calls[0]![1] as globalThis.RequestInit).body as string,
-    ) as {
+    const requestBody = JSON.parse((firstCall?.[1] as globalThis.RequestInit).body as string) as {
       model: string;
       input: string[];
       dimensions?: number;

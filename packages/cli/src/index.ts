@@ -429,6 +429,7 @@ program
         onBatchProgress,
       };
       if (providerInput.provider === "openai") {
+        // Only the OpenAI provider uses batch metadata for resumable batch jobs.
         providerInput.batchApiThreshold = 2500;
         providerInput.batchName = `docs-mcp:${await resolveCorpusLabel(docsDir)}`;
       }
